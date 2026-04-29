@@ -2,7 +2,7 @@ defmodule MiniDiscord.Salon do
   use GenServer
 
   def start_link(name) do
-    GenServer.start_link(__MODULE__, %{name: name, clients: []},
+    GenServer.start_link(__MODULE__, %{name: name, clients: [], historique: []},
       name: via(name))
   end
 
@@ -17,6 +17,10 @@ defmodule MiniDiscord.Salon do
 
   def handle_call({:rejoindre, pid}, _from, state) do
     Process.monitor(pid)
+    # Send message history to the new client
+    for msg <- Enum.reverse(state.historique) do
+      send(pid, {:message, msg})
+    end
 # TODO : Monitorer le pid avec Process.monitor/1
 # TODO : Retourner {:reply, :ok, nouvel_état} avec pid ajouté à state.clients
     {:reply, :ok, %{state | clients: [pid | state.clients]}}
@@ -31,9 +35,11 @@ defmodule MiniDiscord.Salon do
     for pid <- state.clients do
       send(pid, {:message, msg})
     end
+    # Add message to history, keeping only the last 10
+    new_historique = [msg | state.historique] |> Enum.take(10)
 # TODO : Envoyer {:message, msg} à chaque pid dans state.clients
 # TODO : Retourner {:noreply, state}
-    {:noreply, state}
+    {:noreply, %{state | historique: new_historique}}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
@@ -43,4 +49,7 @@ defmodule MiniDiscord.Salon do
   end
 
   defp via(name), do: {:via, Registry, {MiniDiscord.Registry, name}}
+
+
+
 end
