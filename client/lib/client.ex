@@ -1,4 +1,7 @@
 defmodule MiniDiscord.Client do
+  # Clé partagée commune pour le chiffrement AES-256-CTR (32 bytes)
+  # À synchroniser entre client et serveur
+  @cle <<"mini_discord_secret_key_32byte!!"::binary>>
 
   @doc """
   Point d'entrée principal du client.
@@ -31,48 +34,109 @@ defp connect_with_retry(host, port, attempt) do
 end
 
   defp rencontre(socket) do
-      # TODO : Lire les messages du serveur avec recv_print(socket)
-      recv_print(socket)
-      # TODO : Envoyer le pseudo choisi par l'utilisateur avec IO.gets/1
+      # Recevoir et déchiffrer le message de bienvenue
+      case :gen_tcp.recv(socket, 0) do
+        {:ok, msg_recu} ->
+          try do
+            msg = dechiffrer_message(msg_recu)
+            IO.write(msg)
+          rescue
+            _ -> IO.write(msg_recu)
+          end
+        {:error, _} -> :ok
+      end
+
+      # Envoyer le pseudo chiffré
       pseudo = IO.gets("")
-      :gen_tcp.send(socket, to_charlist(pseudo))
-      # TODO : Lire la suite (liste des salons)
-      recv_print(socket)
+      msg_chiffre = chiffrer_message(pseudo)
+      :gen_tcp.send(socket, msg_chiffre)
+
+      # Recevoir et déchiffrer la liste des salons
+      case :gen_tcp.recv(socket, 0) do
+        {:ok, msg_recu} ->
+          try do
+            msg = dechiffrer_message(msg_recu)
+            IO.write(msg)
+          rescue
+            _ -> IO.write(msg_recu)
+          end
+        {:error, _} -> :ok
+      end
+
+      # Envoyer le salon choisi chiffré
       salon = IO.gets("")
-      :gen_tcp.send(socket, to_charlist(salon))
-      # TODO : Envoyer le nom du salon
-      # TODO : Lire la confirmation
-      recv_print(socket)
+      msg_chiffre = chiffrer_message(salon)
+      :gen_tcp.send(socket, msg_chiffre)
+
+      # Recevoir et déchiffrer la confirmation
+      case :gen_tcp.recv(socket, 0) do
+        {:ok, msg_recu} ->
+          try do
+            msg = dechiffrer_message(msg_recu)
+            IO.write(msg)
+          rescue
+            _ -> IO.write(msg_recu)
+          end
+        {:error, _} -> :ok
+      end
   end
 
   defp recv_print(socket) do
       case :gen_tcp.recv(socket, 0) do
-        {:ok, msg} ->
-          IO.write(msg)
+        {:ok, msg_recu} ->
+          try do
+            msg = dechiffrer_message(msg_recu)
+            IO.write(msg)
+          rescue
+            _ -> IO.write(msg_recu)
+          end
         {:error, _} -> :ok
       end
   end
 
   defp receive_loop(socket) do
-      # TODO : Appeler :gen_tcp.recv(socket, 0) — bloquant jusqu'à réception
       case :gen_tcp.recv(socket, 0) do
-      # TODO : Si {:ok, msg} -> afficher avec IO.write/1 et rappeler receive_loop
         {:ok, msg} ->
-          IO.write(msg)
+          try do
+            msg_dechiffre = dechiffrer_message(msg)
+            IO.write(msg_dechiffre)
+          rescue
+            _ -> IO.write(msg)
+          end
           receive_loop(socket)
-      # TODO : Si {:error, _} -> afficher "Déconnecté" et arrêter
         {:error, reason} ->
           IO.puts("\nDéconnecté (#{reason})")
       end
   end
 
   defp send_loop(socket) do
-      # TODO : Lire depuis le clavier avec IO.gets("")
-    message = IO.gets("")
-      # TODO : Envoyer au serveur avec :gen_tcp.send/2
-    :gen_tcp.send(socket, to_charlist(message))
-      # TODO : Rappeler send_loop(socket)
-    send_loop(socket)
+    case IO.gets("") do
+      nil ->
+        :ok
+      message ->
+        msg_chiffre = chiffrer_message(message)
+        :gen_tcp.send(socket, msg_chiffre)
+        send_loop(socket)
+    end
+  end
+
+  @doc """
+  Chiffre un message avec AES-256-CTR.
+  Retourne IV (16 bytes) concaténé au message chiffré.
+  """
+  defp chiffrer_message(msg) when is_binary(msg) do
+    iv = :crypto.strong_rand_bytes(16)
+    msg_chiffre = :crypto.crypto_one_time(:aes_256_ctr, @cle, iv, msg, true)
+    iv <> msg_chiffre
+  end
+
+  @doc """
+  Déchiffre un message chiffré avec AES-256-CTR.
+  Extrait l'IV (16 premiers bytes) et déchiffre le reste.
+  """
+  defp dechiffrer_message(msg_recu) when is_binary(msg_recu) do
+    <<iv::binary-size(16), msg_chiffre::binary>> = msg_recu
+    :crypto.crypto_one_time(:aes_256_ctr, @cle, iv, msg_chiffre, false)
   end
 
 end

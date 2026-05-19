@@ -1,28 +1,59 @@
 defmodule MiniDiscord.ClientHandler do
   require Logger
 
+  def chiffrer_message(msg) when is_binary(msg) do
+    cle = MiniDiscord.get_cle()
+    iv = :crypto.strong_rand_bytes(16)
+    msg_chiffre = :crypto.crypto_one_time(:aes_256_ctr, cle, iv, msg, true)
+    iv <> msg_chiffre
+  end
+
+  def dechiffrer_message(msg_recu) when is_binary(msg_recu) do
+    cle = MiniDiscord.get_cle()
+    <<iv::binary-size(16), msg_chiffre::binary>> = msg_recu
+    :crypto.crypto_one_time(:aes_256_ctr, cle, iv, msg_chiffre, false)
+  end
+
   def start(socket) do
-    :gen_tcp.send(socket, "Bienvenue sur MiniDiscord!\r\n")
+    msg_chiffre = chiffrer_message("Bienvenue sur MiniDiscord!\r\n")
+    :gen_tcp.send(socket, msg_chiffre)
     pseudo = choisir_pseudo(socket)
-    :gen_tcp.send(socket, "Salons disponibles : #{salons_dispo()}\r\n")
-    :gen_tcp.send(socket, "Rejoins un salon (ex: general) : ")
-    {:ok, salon} = :gen_tcp.recv(socket, 0)
-    salon = String.trim(salon)
-    rejoindre_salon(socket, pseudo, salon)
+    msg_chiffre = chiffrer_message("Salons disponibles : #{salons_dispo()}\r\n")
+    :gen_tcp.send(socket, msg_chiffre)
+    msg_chiffre = chiffrer_message("Rejoins un salon (ex: general) : ")
+    :gen_tcp.send(socket, msg_chiffre)
+    {:ok, salon_recu} = :gen_tcp.recv(socket, 0)
+    try do
+      salon = dechiffrer_message(salon_recu)
+      salon = String.trim(salon)
+      rejoindre_salon(socket, pseudo, salon)
+    rescue
+      _ ->
+        msg_chiffre = chiffrer_message("Erreur lors de la réception du salon\r\n")
+        :gen_tcp.send(socket, msg_chiffre)
+    end
   end
 
   defp choisir_pseudo(socket) do
-    :gen_tcp.send(socket, "Entre ton pseudo : ")
-    {:ok, pseudo} = :gen_tcp.recv(socket, 0)
-    pseudo = String.trim(pseudo)
-    # TODO : Si pseudo_disponible?(pseudo) -> reserver_pseudo(pseudo) et retourner pseudo
-    # TODO : Sinon -> envoyer un message d'erreur et rappeler choisir_pseudo(socket)
-    if pseudo_disponible?(pseudo) do
-      reserver_pseudo(pseudo)
-      pseudo
-    else
-      :gen_tcp.send(socket, "Ce pseudo est déjà pris!\r\n")
-      choisir_pseudo(socket)
+    msg_chiffre = chiffrer_message("Entre ton pseudo : ")
+    :gen_tcp.send(socket, msg_chiffre)
+    {:ok, pseudo_recu} = :gen_tcp.recv(socket, 0)
+    try do
+      pseudo = dechiffrer_message(pseudo_recu)
+      pseudo = String.trim(pseudo)
+      if pseudo_disponible?(pseudo) do
+        reserver_pseudo(pseudo)
+        pseudo
+      else
+        msg_chiffre = chiffrer_message("Ce pseudo est déjà pris!\r\n")
+        :gen_tcp.send(socket, msg_chiffre)
+        choisir_pseudo(socket)
+      end
+    rescue
+      _ ->
+        msg_chiffre = chiffrer_message("Erreur lors de la réception du pseudo\r\n")
+        :gen_tcp.send(socket, msg_chiffre)
+        choisir_pseudo(socket)
     end
   end
 
@@ -36,8 +67,10 @@ defmodule MiniDiscord.ClientHandler do
     end
 
     MiniDiscord.Salon.rejoindre(salon, self())
-    MiniDiscord.Salon.broadcast(salon, "📢 #{pseudo} a rejoint ##{salon}\r\n")
-    :gen_tcp.send(socket, "Tu es dans ##{salon} — écris tes messages !\r\n")
+    msg_chiffre = chiffrer_message("📢 #{pseudo} a rejoint ##{salon}\r\n")
+    MiniDiscord.Salon.broadcast(salon, msg_chiffre)
+    msg_chiffre = chiffrer_message("Tu es dans ##{salon} — écris tes messages !\r\n")
+    :gen_tcp.send(socket, msg_chiffre)
 
     loop(socket, pseudo, salon)
   end
@@ -50,16 +83,22 @@ defmodule MiniDiscord.ClientHandler do
     end
 
     case :gen_tcp.recv(socket, 0, 100) do
-      {:ok, msg} ->
-        msg = String.trim(msg)
-        # TODO : Si msg commence par "/" -> gérer_commande(socket, pseudo, salon, msg)
-        # TODO : Sinon -> broadcast normal
-        if String.starts_with?(msg, "/") do
-          gerer_commande(socket, pseudo, salon, msg)
-          loop(socket, pseudo, salon)
-        else
-          MiniDiscord.Salon.broadcast(salon, "[#{pseudo}] #{msg}\r\n")
-          loop(socket, pseudo, salon)
+      {:ok, msg_recu} ->
+        try do
+          msg = dechiffrer_message(msg_recu)
+          msg = String.trim(msg)
+          if String.starts_with?(msg, "/") do
+            gerer_commande(socket, pseudo, salon, msg)
+            loop(socket, pseudo, salon)
+          else
+            msg_chiffre = chiffrer_message("[#{pseudo}] #{msg}\r\n")
+            MiniDiscord.Salon.broadcast(salon, msg_chiffre)
+            loop(socket, pseudo, salon)
+          end
+        rescue
+          _ ->
+            Logger.error("Erreur lors du déchiffrement du message")
+            loop(socket, pseudo, salon)
         end
 
       {:error, :timeout} ->
@@ -74,19 +113,17 @@ defmodule MiniDiscord.ClientHandler do
   end
 
   defp gerer_commande(socket, pseudo, salon, commande) do
-    # TODO : "/list" -> envoyer la liste des salons avec MiniDiscord.Salon.lister()
-    # TODO : "/join <nom>" -> quitter le salon actuel et rejoindre le nouveau
-    # TODO : "/quit" -> déconnecter proprement le client
-    # TODO : _ -> envoyer "Commande inconnue"
     case String.split(commande) do
       ["/list"] ->
         salons = MiniDiscord.Salon.lister()
         message = "Salons disponibles : #{Enum.join(salons, ", ")}\r\n"
-        :gen_tcp.send(socket, message)
+        msg_chiffre = chiffrer_message(message)
+        :gen_tcp.send(socket, msg_chiffre)
 
       ["/join", nouveau_salon] ->
         MiniDiscord.Salon.quitter(salon, self())
-        MiniDiscord.Salon.broadcast(salon, "👋 #{pseudo} a quitté ##{salon}\r\n")
+        msg_chiffre = chiffrer_message("👋 #{pseudo} a quitté ##{salon}\r\n")
+        MiniDiscord.Salon.broadcast(salon, msg_chiffre)
 
         case Registry.lookup(MiniDiscord.Registry, nouveau_salon) do
           [] ->
@@ -97,18 +134,23 @@ defmodule MiniDiscord.ClientHandler do
         end
 
         MiniDiscord.Salon.rejoindre(nouveau_salon, self())
-        MiniDiscord.Salon.broadcast(nouveau_salon, "📢 #{pseudo} a rejoint ##{nouveau_salon}\r\n")
-        :gen_tcp.send(socket, "Tu es maintenant dans ##{nouveau_salon}\r\n")
+        msg_chiffre = chiffrer_message("📢 #{pseudo} a rejoint ##{nouveau_salon}\r\n")
+        MiniDiscord.Salon.broadcast(nouveau_salon, msg_chiffre)
+        msg_chiffre = chiffrer_message("Tu es maintenant dans ##{nouveau_salon}\r\n")
+        :gen_tcp.send(socket, msg_chiffre)
 
       ["/quit"] ->
-        MiniDiscord.Salon.broadcast(salon, "👋 #{pseudo} a quitté ##{salon}\r\n")
+        msg_chiffre = chiffrer_message("👋 #{pseudo} a quitté ##{salon}\r\n")
+        MiniDiscord.Salon.broadcast(salon, msg_chiffre)
         MiniDiscord.Salon.quitter(salon, self())
         liberer_pseudo(pseudo)
-        :gen_tcp.send(socket, "À bientôt!\r\n")
+        msg_chiffre = chiffrer_message("À bientôt!\r\n")
+        :gen_tcp.send(socket, msg_chiffre)
         :gen_tcp.close(socket)
 
       _ ->
-        :gen_tcp.send(socket, "Commande inconnue\r\n")
+        msg_chiffre = chiffrer_message("Commande inconnue\r\n")
+        :gen_tcp.send(socket, msg_chiffre)
     end
   end
 

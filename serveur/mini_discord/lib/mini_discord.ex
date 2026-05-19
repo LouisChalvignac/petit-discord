@@ -1,6 +1,12 @@
 defmodule MiniDiscord do
   use Application
 
+  # Clé partagée commune pour le chiffrement AES-256-CTR (32 bytes)
+  # À synchroniser entre client et serveur
+  @cle <<"mini_discord_secret_key_32byte!!"::binary>>
+
+  def get_cle, do: @cle
+
   def start(_type, _args) do
     :ets.new(:pseudos, [:named_table, :public, :set])
 
